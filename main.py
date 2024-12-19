@@ -4,79 +4,55 @@ from person_module.person_process import  person_embedding, compare_people
 import torch
 from face_module.face_process import face_detecting , face_embedding , compare_faces
 import numpy as np
+import torchreid 
+from facenet_pytorch import MTCNN, InceptionResnetV1
 import os
+from phase1_test import phase1
+from phase2_test import phase2
+from scipy.spatial.distance import cosine
+import time
 device = 'gpu' if torch.cuda.is_available() else 'cpu'
-detection_model = YOLO('yolov8n.pt').to(device= device)
-input_video = cv2.VideoCapture(r'assets/input/messi_testcase.mp4')
+face_extraction_model = InceptionResnetV1(pretrained= 'vggface2' ,device=device).eval()
+face_detection_model = MTCNN(keep_all= True , device= device)
+person_extraction_model = torchreid.utils.FeatureExtractor(
+    model_name= 'osnet_x1_0',
+    device= device
+)
+person_detection_model = YOLO('yolov8n.pt')
+person_detection_model.to(device)
 
+# PATH
+input_path = r'assets\\input\\neymar_testcase.mp4'
+output_folder = r'assets\\output' ; output_filename = r'result.mp4'
+output_path = os.path.join(output_folder , output_filename)
+
+
+# Các khai báo của đối tượng
 target_img = cv2.imread(r'assets/input/messi4.jpg')
-target_face = face_detecting(target_img)
+target_face = face_detecting(target_img , 1  ,face_detection_model)
 if len(target_face) == 1:
     target_face = target_face[0]
-target_face_embed = face_embedding(target_face)
+target_face_embed = face_embedding(target_face , face_extraction_model)[0]
 target_gesture_embed_log = []
 average_target_embed = None
 
-fourcc = cv2.VideoWriter.fourcc(*'mp4v')
-
-# phase thu thập dữ liệu về dáng dựa trên khuôn mặt
-def phase1():
-    output_folder = r'assets\\output' ; output_filename = r'messi_testcase_phase1.mp4'
-    output_path = os.path.join(output_folder , output_filename)
-    fourcc = cv2.VideoWriter.fourcc(*'mp4v')
-    output_video = cv2.VideoWriter(output_path, fourcc, input_video.get(cv2.CAP_PROP_FPS), 
-                                    (int(input_video.get(cv2.CAP_PROP_FRAME_WIDTH)), int(input_video.get(cv2.CAP_PROP_FRAME_HEIGHT))))
-
-    while True:
-        ret , frame = input_video.read()
-        if ret == False:
-            print('Cannot read video')
-            break
-        check = False
-            
-        # xác định người và kiểm tra nếu người đó có trong frame
-        result = detection_model(frame , conf = 0.5)
-        for res in result:
-            for box in res.boxes:
-                classID = int(box.cls[0])
-                
-                # Xét các đối tượng là con người trong frame
-                if classID == 0:
-                    x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    confidence_score = box.conf.item()  # Extract the value as a float
-                    cv2.putText(frame, f'{confidence_score:.2f}', (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
-                    person_img = frame[y1:y2 , x1:x2]
-                    person_embed = person_embedding(person_img)
-                    person_embed = person_embed[0]
-                    
-                    faces = face_detecting(person_img)
-                    if faces is not None:
-                        for face in faces:
-                            face_embed = face_embedding(face)
-                            if face_embed is None:
-                                continue
-                            check = compare_faces(face_embed , target_face_embed)
-                            if check is True: 
-                                target_gesture_embed_log.append(person_embed)
-                                break
-                    if check is True:  break
-                        
-        if output_video.isOpened() and check == True:
-            output_video.write(frame)
-            
-
-    input_video.release()
-    output_video.release()
-    cv2.destroyAllWindows()
-    
-# Phase phân tích video
-def phase2():
-    pass
 
 if __name__ == "__main__":
-    phase1()
+    begin_time = time.time()
+    phase1(input_path  , target_face_embed , target_gesture_embed_log , face_extraction_model , face_detection_model , person_detection_model, person_extraction_model)
     print ('############### KẾT THÚC PHASE I #################')
-    np.save("target_gesture_embed_log.npy", target_gesture_embed_log)
+    print('Thời gian thực hiện chương trình: ' , time.time() - begin_time) 
     average_target_embed = np.mean(target_gesture_embed_log , axis= 0)
-    phase2()
+    
+    max_bound = 0.0
+    for gesture_embed in target_gesture_embed_log:
+        temp = cosine(average_target_embed , gesture_embed)
+        max_bound = max(max_bound , temp)
+    max_bound = round(max_bound +0.05 , 1)
+    max_bound = max(max_bound , 0.3)
+    
+    phase2_begin_time = time.time()
+    phase2(input_path, output_path  ,max_bound , average_target_embed , target_face_embed , face_extraction_model , face_detection_model , person_detection_model ,person_extraction_model)
+    print ('############### KẾT THÚC PHASE II #################')
+    print('Thời gian thực hiện chương trình: ' , time.time() - begin_time)
+    print('Thời gian thực hiện phase 2: ' , time.time() -phase2_begin_time)

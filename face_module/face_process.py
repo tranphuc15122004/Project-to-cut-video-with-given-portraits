@@ -6,6 +6,7 @@ from facenet_pytorch import MTCNN, InceptionResnetV1
 from torchvision import transforms
 from scipy.spatial.distance import cosine
 import time
+from typing import Tuple
 
 # Initialize model vggface2
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -13,22 +14,111 @@ face_extraction_model = InceptionResnetV1(pretrained= 'vggface2' ,device=device)
 face_detection_model = MTCNN(keep_all= True , device= device)
 
 # Detect face in an image
-def face_detecting(img) -> list:
+def face_detecting(img , rate , face_detection_model) -> list:
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     boxes, probabilities = face_detection_model.detect(img_rgb)
-    face_crops = []
+    results = []
+    back_up = []
+    img_area = img.shape[0] * img.shape[1]  # Diện tích ảnh
 
     if boxes is None:
         print("Không thể xác định được khuôn mặt trong ảnh.")
     else:
         for box, prob in zip(boxes, probabilities):
-            x1, y1, x2, y2 = map(int, box)
-            # Cắt khuôn mặt ra từ ảnh
-            face_crop = img[y1:y2, x1:x2]
-            face_crops.append(face_crop)
-        print(f"Đã phát hiện {len(boxes)} khuôn mặt.")
-    return face_crops
+            if prob > 0.7:
+                x1, y1, x2, y2 = map(int, box)
+                # Tính diện tích bounding box
+                face_area = (x2 - x1) * (y2 - y1)
+                face_area_ratio = face_area / img_area
+                face_crop = img[y1:y2, x1:x2]    
+                back_up.append(face_crop)
+                # Chỉ giữ các khuôn mặt có tỷ lệ < 0.2
+                if face_area_ratio < rate:
+                    face_crop = img[y1:y2, x1:x2]
+                    results.append(face_crop)
+        print(f"Đã phát hiện {len(results)} khuôn mặt có tỷ lệ nhỏ hơn 20% cơ thể.")
 
+    return results or back_up
+
+def target_face_detect(img , target_embed , face_detection_model) -> bool:
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    boxes, probabilities = face_detection_model.detect(img_rgb)
+    check = False
+    if boxes is None or len(boxes) ==0 :
+        print("Không thể xác định được khuôn mặt trong ảnh.")
+        return check
+    else:
+        try:
+            faces = face_detecting(img , face_detection_model)
+        except: return False
+        if faces is not None:
+            for face in faces:
+                try:
+                    face_embed = face_embedding(face , face_extraction_model)
+                except:
+                    return False
+                if face_embed is None:
+                    continue
+                face_embed = face_embed[0]
+                try:
+                    check = compare_faces(face_embed , target_embed , 0.5)
+                except: return False
+                if check: 
+                    print("Đã phát hiện đối tượng trong ảnh.")
+                    return check
+                
+    """ else:
+        for box, prob in zip(boxes, probabilities):
+            if prob >= 0.5:
+                x1, y1, x2, y2 = map(int, box)
+                crop = img[y1:y2 , x1:x2]
+                crop_embed = face_embedding(crop)
+                if crop_embed is None:
+                    continue
+                if compare_faces(crop_embed , target_embed , 0.4):
+                    print("Đã phát hiện đối tượng trong ảnh.")
+                    return True """
+    print('Không có đối tượng ở trong ảnh')
+    return check
+
+def face_detecting_coordinates(img ,face_detection_model) -> list:
+    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    boxes, probabilities = face_detection_model.detect(img_rgb)
+    
+    # Kiểm tra nếu không phát hiện được khuôn mặt nào
+    if boxes is None or len(boxes) == 0:
+        return []
+    face_coordinates = []
+    
+    # Lấy tất cả các bounding boxes và độ tin cậy của chúng
+    for box, prob in zip(boxes, probabilities):
+        x1, y1, x2, y2 = map(int, box)
+        face_coordinates.append((x1, y1, x2, y2, prob))  # Thêm độ tin cậy vào tuple
+
+    # Sắp xếp các bounding box theo độ tin cậy giảm dần
+    face_coordinates.sort(key=lambda x: x[4], reverse=True)    
+    return face_coordinates
+
+def face_of_person(person_img , target_embed):
+    img_rgb = cv2.cvtColor(person_img, cv2.COLOR_BGR2RGB)
+    boxes, probabilities = face_detection_model.detect(img_rgb)
+    
+    if boxes is None or len(boxes) ==0 :
+        print("Không thể xác định được khuôn mặt trong ảnh.")
+        return False
+    else:
+        for box, prob in zip(boxes, probabilities):
+            if prob >= 0.7:
+                x1, y1, x2, y2 = map(int, box)
+                crop = person_img[y1:y2 , x1:x2]
+                crop_embed = face_embedding(crop)
+                if crop_embed is None:
+                    continue
+                if compare_faces(crop_embed , target_embed , 0.5):
+                    print("Đã phát hiện đối tượng trong ảnh.")
+                    return True
+    print('Không có đối tượng ở trong ảnh')
+    return False
 
 # Preprocess image for face feature extraction
 # Đầu vào là một ảnh khuôn mặt đọc bằng cv2 (numpy array)
@@ -71,7 +161,7 @@ def preprocess_image(face_image) -> torch.Tensor:
 # feature extraction
 # Đầu vào là một mảng các tensor
 # Đầu ra: 1 mảng các numpy array 
-def face_embedding(img) -> 'np.array':
+def face_embedding(img , face_extraction_model) -> 'np.array':
     processed =  preprocess_image(img)
     if processed is None:
         return None
@@ -82,8 +172,8 @@ def face_embedding(img) -> 'np.array':
 
 
 def compare_faces(embedding1, embedding2, threshold=0.6):
-    embedding1 = embedding1[0]
-    embedding2 = embedding2[0]
+    embedding1 = embedding1.reshape(512)
+    embedding2 = embedding2.reshape(512)
     score = cosine(embedding1, embedding2)
     if score <= threshold:
         print('=> face is a Match (%.3f <= %.3f)' % (score, threshold))
@@ -93,56 +183,12 @@ def compare_faces(embedding1, embedding2, threshold=0.6):
         return False
 
 def test1():
-    begin_time = time.time()
-    img_paths = [r'assets\\input\\messi1.jpg',
-                r'assets\\input\\messi2.jpg',
-                r'assets\\input\\messi3.jpg',
-                r'assets\\input\\messi4.jpg',
-                r'assets\\input\\messi5.jpg',
-                r'assets\\input\\messi6.jpg',
-                r'assets\\input\\messi7.jpg',]
-    face_tensors = []
-    for path in img_paths:
-        _, faces = face_detecting(path)
-        if faces:
-            face_tensors.append(preprocess_image(faces[0])) 
-
-    if face_tensors:
-        batched_tensors = torch.cat(face_tensors, dim=0)  
-        embeddings = face_embedding(batched_tensors)  
-        mean_feature = np.mean(embeddings, axis=0)
-    else:
-        print("Không có khuôn mặt nào được phát hiện.")
+    target_img = cv2.imread(r'assets/input/messi4.jpg')
+    target_face = face_detecting(target_img)[0]
+    target_embed = face_embedding(target_face)
     
-    img , face = face_detecting(r'assets\\input\\messi_test.jpg')
-    processed_img =  preprocess_image(face[0])
-    embedded = face_embedding(processed_img)
-    embedded = embedded.squeeze()
-    compare_faces(embedded , mean_feature)
-    print(time.time() - begin_time)
-    
-def test2():
-    begin_time = time.time()
-    img1 , face1 = face_detecting(r'assets\\input\\messi_test.jpg')
-    processed_img1 =  preprocess_image(face1[0])
-    embedded1 = face_embedding(processed_img1)
-    embedded1 =    embedded1.squeeze()
-    
-    img2 , face2 = face_detecting(r'assets\\input\\messi6.jpg')
-    processed_img2 =  preprocess_image(face2[0])
-    embedded2 = face_embedding(processed_img2)
-    embedded2 = embedded2.squeeze()
-    compare_faces (embedded1 , embedded2)
-    print(time.time() - begin_time)
-    
-def test3():
-    begin = time.time()
-    img = cv2.imread(r'assets\\input\\messi_test.jpg')
-    face1 = face_detecting(img)
-    embedded1 = face_embedding(face1)
-    print(embedded1)
-    print(embedded1[0].shape)    
-    print(time.time() - begin)
+    img = cv2.imread(r'assets/input/messi5.jpg')
+    print (face_detecting_coordinates(img , target_embed))
 
 if __name__ == "__main__":
-    test3()
+    test1()

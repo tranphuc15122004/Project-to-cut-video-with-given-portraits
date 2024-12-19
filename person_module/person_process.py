@@ -8,16 +8,16 @@ import cv2
 import numpy as np
 
 device= 'cuda' if torch.cuda.is_available() else 'cpu'
-extraction_model = torchreid.utils.FeatureExtractor(
+person_extraction_model = torchreid.utils.FeatureExtractor(
     model_name= 'osnet_x1_0',
     device= device
 )
-detection_model = YOLO('yolov8n.pt')
-detection_model.to(device)
+person_detection_model = YOLO('yolov8n.pt')
+person_detection_model.to(device)
 
-def person_detecting(image) -> list['np.array']:
+def person_detecting(image , person_detection_model) -> list['np.array']:
     person_crop = []
-    result= detection_model(image , conf = 0.5, device = device)
+    result= person_detection_model(image , conf = 0.5, device = device)
     for res in result:
         for box in res.boxes:
             classID = int(box.cls[0])
@@ -65,23 +65,48 @@ def preprocess(person_image) -> torch.Tensor:
     return res
 
 # Trả về embedding matrix của đối tượng dưới dạng numpy array dạng (1,512)
-def person_embedding(person_image) -> np.array:
+def person_embedding(person_image , person_extraction_model) -> np.array:
     processed = preprocess(person_image)
     with torch.no_grad():
-            embedding = extraction_model(processed)
+            embedding = person_extraction_model(processed)
             embedding = embedding.cpu().numpy()
     return embedding
 
 def compare_people(embedding1, embedding2, threshold=0.6):
-    embedding1 = embedding1[0]
-    embedding2 = embedding2[0]
     score = cosine(embedding1, embedding2)
     if score <= threshold:
         print('=> These picture belong to the same person (%.3f <= %.3f)' % (score, threshold))
-        return True
+        return True , score
     else:
         print('=> These picture do NOT belong to the same person (%.3f > %.3f)' % (score, threshold))
-        return False
+        return False , score
+    
+    
+def calculate_iou_opencv(boxA, boxB):
+    # Tính toạ độ giao nhau
+    x1_inter = max(boxA[0], boxB[0])
+    y1_inter = max(boxA[1], boxB[1])
+    x2_inter = min(boxA[2], boxB[2])
+    y2_inter = min(boxA[3], boxB[3])
+    
+    # Kiểm tra nếu không có giao nhau
+    if x2_inter < x1_inter or y2_inter < y1_inter:
+        return 0.0
+    
+    # Diện tích giao nhau
+    intersection_area = (x2_inter - x1_inter) * (y2_inter - y1_inter)
+    
+    # Diện tích của mỗi box
+    boxA_area = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+    boxB_area = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+    
+    # Diện tích hợp nhất
+    union_area = boxA_area + boxB_area - intersection_area
+    
+    # IoU
+    iou = intersection_area / union_area
+    return iou
+
 
 def test():
     img = cv2.imread(r'assets\\input\\messi1.jpg')
