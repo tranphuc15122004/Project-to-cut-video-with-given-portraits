@@ -7,6 +7,6 @@ Thuật toán của chương trình được xây dựng gồm 2 giai đoạn ch
 - Giai đoạn 1: duyệt qua video lần thứ nhất để thu thập các thông tin về hình dàng của đổi tượng dựa trên khuôn mặt (Chương trình sẽ )
 - Giai đoạn 2: 
 
-##Công nghệ và Framework sử dụng
+## Công nghệ và Framework sử dụng
 
 ##
